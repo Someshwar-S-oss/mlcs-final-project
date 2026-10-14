@@ -1,0 +1,29 @@
+[project]
+name = "patchpriority"
+version = "0.1.0"
+description = "Exploitation-likelihood prediction and risk-based vulnerability triage on NVD/KEV data"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "pyarrow>=15",
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+]
+
+[project.optional-dependencies]
+notebook = ["nbformat>=5.9", "nbclient>=0.10", "ipykernel>=6.29"]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

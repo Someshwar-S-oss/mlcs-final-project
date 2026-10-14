@@ -196,11 +196,87 @@ summary = pd.DataFrame([
     ('>= 2 archetypes with KEV rate > 3%', f"{len(hi)} clusters: " + ' | '.join(hi['top_terms'].str.split(', ').str[:3].str.join(' ')), len(hi) >= 2),
 ], columns=['criterion', 'result', 'met'])
 display(summary)"""),
+
+    md("""### Operational Triage Confusion Matrices (Test Split 2025–2026)
+
+Comparing triage outcomes across three distinct operating postures on the 2025–2026 test set:
+1. **CVSS CRITICAL Only (Baseline):** Conventional severity-based triage.
+2. **Decision Tree Triage (CART Rules):** Cost-sensitive rule set for auditable triage.
+3. **Logistic Ranker @ Budget k=224 (Production Ranker):** Publication-day text + metadata ranking at equal patch capacity."""),
+    code("""from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+# 1. Baseline: CVSS CRITICAL only
+y_pred_crit = (test_df['best_cvss_base_severity'] == 'CRITICAL').values.astype(int)
+cm_crit = confusion_matrix(y_test, y_pred_crit)
+
+# 2. Decision Tree Triage Policy (cost-sensitive CART)
+y_pred_dt = dt_pipe.predict(test_df[FEATURES])
+cm_dt = confusion_matrix(y_test, y_pred_dt)
+
+# 3. Production Ranker (Logistic Regression at equal-effort budget k=224)
+y_prob_lr = lr_pipe.predict_proba(test_df[FEATURES])[:, 1]
+top_k_idx = np.argsort(y_prob_lr)[::-1][:k]
+y_pred_lr_k = np.zeros_like(y_test)
+y_pred_lr_k[top_k_idx] = 1
+cm_lr_k = confusion_matrix(y_test, y_pred_lr_k)
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+
+policies = [
+    ('CVSS CRITICAL Only (Baseline)', cm_crit, axes[0], 'Reds',
+     f"Precision: {cm_crit[1, 1] / (cm_crit[0, 1] + cm_crit[1, 1]):.1%}\\nRecall: {cm_crit[1, 1] / (cm_crit[1, 0] + cm_crit[1, 1]):.1%}"),
+    ('Decision Tree Triage (CART Rules)', cm_dt, axes[1], 'Blues',
+     f"Precision: {dt_metrics['precision']:.1%}\\nRecall: {dt_metrics['recall']:.1%}"),
+    (f'Logistic Ranker (Budget k={k})', cm_lr_k, axes[2], 'Greens',
+     f"Precision: {lr_metrics[f'precision@{k}']:.1%}\\nRecall: {lr_metrics[f'recall@{k}']:.1%}"),
+]
+
+for title, cm, ax, cmap, stats in policies:
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Not KEV', 'KEV'])
+    disp.plot(ax=ax, cmap=cmap, colorbar=False, values_format='d')
+    ax.set_title(f"{title}\\n{stats}", fontsize=11)
+    ax.grid(False)
+
+plt.tight_layout()
+plt.show()
+
+cm_summary = pd.DataFrame([
+    {
+        'Policy': 'CVSS CRITICAL Only',
+        'True Positives (KEV caught)': cm_crit[1, 1],
+        'False Positives (Wasted effort)': cm_crit[0, 1],
+        'False Negatives (Missed exploits)': cm_crit[1, 0],
+        'True Negatives (Correctly deferred)': cm_crit[0, 0],
+        'Precision': cm_crit[1, 1] / (cm_crit[0, 1] + cm_crit[1, 1]),
+        'Recall': cm_crit[1, 1] / (cm_crit[1, 0] + cm_crit[1, 1]),
+    },
+    {
+        'Policy': 'Decision Tree (Auditable)',
+        'True Positives (KEV caught)': cm_dt[1, 1],
+        'False Positives (Wasted effort)': cm_dt[0, 1],
+        'False Negatives (Missed exploits)': cm_dt[1, 0],
+        'True Negatives (Correctly deferred)': cm_dt[0, 0],
+        'Precision': dt_metrics['precision'],
+        'Recall': dt_metrics['recall'],
+    },
+    {
+        'Policy': f'Logistic Ranker (Top {k})',
+        'True Positives (KEV caught)': cm_lr_k[1, 1],
+        'False Positives (Wasted effort)': cm_lr_k[0, 1],
+        'False Negatives (Missed exploits)': cm_lr_k[1, 0],
+        'True Negatives (Correctly deferred)': cm_lr_k[0, 0],
+        'Precision': lr_metrics[f'precision@{k}'],
+        'Recall': lr_metrics[f'recall@{k}'],
+    },
+])
+display(cm_summary.round({'Precision': 4, 'Recall': 4}))"""),
+
     md("""**Reading the results**
 
 - CVSS severity is a weak exploitation signal: ranking by base score gives a PR-AUC only a few times the base rate, and patching HIGH + CRITICAL spends almost all effort on vulnerabilities never seen exploited.
 - Publication-day text and metadata rank far better (logistic ranker ≈ 25× base rate on 2025–26). The strongest signals are vendor-reported in-the-wild exploitation ("Apple is aware of a report…"), the CNA and product (Microsoft, Apple, Citrix, Roundcube, Zimbra, Chrome/V8), and authentication-bypass / RCE language. Weakness classes taught most often are rarely exploited: XSS (CWE-79) sits at 0.1× the base rate.
 - The 15-leaf decision tree is a usable written policy: it catches more exploited CVEs than *CVSS CRITICAL only* at higher precision, but its coarse scores rank poorly, so it is a triage gate rather than a ranker.
+- The confusion matrices quantify the operational triage trade-offs: CVSS CRITICAL generates 5,931 false positives (unnecessary patches) and misses 142 exploited vulnerabilities. The Decision Tree policy increases recall to 64.3% (catching 155 KEV vulnerabilities vs 99 for CVSS Critical) with an auditable rule set. Meanwhile, the Logistic Ranker at sprint budget k=224 maximizes precision to 13.4% (>8× higher than CVSS Critical) to concentrate scarce engineering capacity on high-confidence threats.
 - K-Means recovers plain-language high-risk archetypes (Windows privilege escalation, Apple macOS, Chrome) with no labels.
 - EPSS remains well ahead. It is scored months later using exploit-activity telemetry, so the fair claim is that this model offers an EPSS-like signal **on day zero**, before EPSS has data.
 - Because KEV is positive-unlabelled and 2025–26 CVEs have had little time to be listed, all test precisions are lower bounds."""),
@@ -217,14 +293,20 @@ This section demonstrates the full model lifecycle:
 from patchpriority.service import prepare_records, score
 
 # 1. Model Serialization (persisting pipeline to disk)
-MODEL_PATH = Path("artifacts/ranker.joblib")
-MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+MODEL_DIR = Path("model")
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+MODEL_PATH = MODEL_DIR / "ranker.joblib"
+
+ARTIFACT_PATH = Path("artifacts/ranker.joblib")
+ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 bundle = {
     'pipeline': lr_pipe,
     'base_rate': float(train_df[TARGET].mean()),
     'trained_through': 2023,
 }
 joblib.dump(bundle, MODEL_PATH)
+joblib.dump(bundle, ARTIFACT_PATH)
 print(f"Model serialized successfully to {MODEL_PATH} ({MODEL_PATH.stat().st_size / 1024:.1f} KB)")
 
 # 2. Deserialization / Reusability Verification
